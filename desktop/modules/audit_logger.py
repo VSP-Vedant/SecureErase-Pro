@@ -26,7 +26,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Union
 
 
 class AuditEventType(str, Enum):
@@ -43,6 +43,7 @@ class AuditEventType(str, Enum):
     CHAIN_VERIFIED       = "chain_verified"
     CHAIN_BROKEN         = "chain_broken"
     EXPORT_COMPLETED     = "export_completed"
+    SYSTEM_EVENT         = "system_event"   # Catch-all for unrecognized event types
 
 
 @dataclass
@@ -104,9 +105,17 @@ class AuditLogger:
         if log_dir is None:
             log_dir = self._default_log_dir()
 
-        self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        self.log_path = self.log_dir / log_filename
+        p = Path(log_dir)
+        # If the path looks like a file (has a file extension), treat it as
+        # the full log file path rather than a directory.
+        if p.suffix in (".log", ".jsonl", ".txt") or (p.parent.exists() and not p.is_dir()):
+            self.log_dir = p.parent
+            self.log_path = p
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.log_dir = p
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            self.log_path = self.log_dir / log_filename
         self.max_size_bytes = max_size_mb * 1024 * 1024
         self._lock = threading.Lock()
 
@@ -122,20 +131,26 @@ class AuditLogger:
 
     def log_event(
         self,
-        event_type: AuditEventType,
+        event_type,
         data: dict,
-    ) -> AuditEntry:
+    ) -> "AuditEntry":
         """
         Append a new event to the audit log.
 
         Args:
-            event_type: Type of audit event.
+            event_type: Type of audit event — AuditEventType enum or plain string.
             data: Event-specific data dict. Must be JSON-serializable.
                   Sensitive fields (passwords, keys) must NOT be included.
 
         Returns:
             The AuditEntry that was written.
         """
+        # Coerce string → AuditEventType gracefully
+        if not isinstance(event_type, AuditEventType):
+            try:
+                event_type = AuditEventType(event_type)
+            except ValueError:
+                event_type = AuditEventType.SYSTEM_EVENT
         with self._lock:
             # Rotate log if size limit exceeded
             if self.log_path.exists() and self.log_path.stat().st_size > self.max_size_bytes:
@@ -175,7 +190,15 @@ class AuditLogger:
             self._last_hash = entry_hmac
             return AuditEntry(**entry_data)
 
-    def verify_chain(self) -> dict:
+    def verify_chain(self) -> bool:
+        """
+        Verify the integrity of the entire audit log chain.
+        Returns True if the chain is intact, False if any entry is tampered.
+        For full detail (entry counts, error location), use verify_chain_detail().
+        """
+        return self.verify_chain_detail()["valid"]
+
+    def verify_chain_detail(self) -> dict:
         """
         Verify the integrity of the entire audit log chain.
 

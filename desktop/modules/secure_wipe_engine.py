@@ -47,6 +47,7 @@ class WipeStandard(str, Enum):
     String values match the 'standard_applied' field in the JSON certificate.
     """
     NIST_800_88_CLEAR        = "NIST SP 800-88 Rev.1 - Clear"
+    NIST_800_88_PURGE        = "NIST SP 800-88 Rev.1 - Purge"
     DOD_5220_22M_3PASS       = "DoD 5220.22-M (3-pass)"
     DOD_5220_22M_7PASS       = "DoD 5220.22-M (7-pass)"
     GUTMANN_35PASS           = "Gutmann 35-pass"

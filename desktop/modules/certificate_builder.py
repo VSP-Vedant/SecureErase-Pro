@@ -270,3 +270,126 @@ class CertificateBuilder:
             return f"{platform.system()} {platform.release()} ({platform.machine()})"
         except Exception:
             return "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience functions for test and external use.
+# These accept plain dicts OR dataclass instances, making them usable
+# directly in tests without constructing full dataclass objects.
+# ---------------------------------------------------------------------------
+
+def _to_obj(cls, val):
+    """Convert a dict to a dataclass instance if needed."""
+    if isinstance(val, dict):
+        # Filter to only keys that exist in the dataclass
+        import dataclasses
+        fields = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in val.items() if k in fields})
+    return val
+
+
+def build_certificate(
+    file_entry,
+    wipe_result,
+    hash_before,
+    hash_after=None,
+    compliance_mappings=None,
+    operator_username=None,
+    operator=None,
+    previous_cert_json=None,
+    chain_position: int = 1,
+    issuer_org: str = "SecureErase Pro",
+    portal_url: str = "https://verify.example.com",
+    public_key_url: str = "https://verify.example.com/api/v1/keys/default",
+    public_key_fingerprint: str = "0" * 64,
+) -> dict:
+    """
+    Module-level builder: build an unsigned certificate dict.
+    Accepts plain dicts or dataclass instances for all inputs.
+    Extra kwargs (issuer_org, portal_url, etc.) allow per-call configuration.
+    """
+    from .hash_verifier import HashResult as HR
+    from .secure_wipe_engine import WipeResult as WR, PassDetail as PD
+    from .compliance_mapper import ComplianceMapping as CM
+
+    builder = CertificateBuilder(
+        organization=issuer_org,
+        portal_domain=portal_url,
+        public_key_url=public_key_url,
+        public_key_fingerprint=public_key_fingerprint,
+    )
+
+    # Coerce dicts → dataclasses
+    fe = _to_obj(FileEntry, file_entry)
+
+    # WipeResult may have pass_detail as list of dicts
+    if isinstance(wipe_result, dict):
+        wr_dict = dict(wipe_result)
+        pd_raw = wr_dict.pop("pass_detail", [])
+        pd_list = []
+        for p in pd_raw:
+            if isinstance(p, dict):
+                pd_dict = dict(p)
+                pd_dict.setdefault("started_at", "")
+                pd_dict.setdefault("completed_at", "")
+                pd_dict.setdefault("error", None)
+                pd_list.append(_to_obj(PD, pd_dict))
+            else:
+                pd_list.append(p)
+        # Fill in required WipeResult fields that may be absent in test dicts
+        import dataclasses
+        wr_fields = {f.name for f in dataclasses.fields(WR)}
+        wr_kwargs = {k: v for k, v in wr_dict.items() if k in wr_fields}
+        wr_kwargs.setdefault("passes_total", wr_kwargs.get("passes_completed", 0))
+        wr_kwargs.setdefault("duration_seconds", 0.0)
+        wr_kwargs.setdefault("verified", True)
+        wr_kwargs.setdefault("sha256_after", "")
+        wr_kwargs.setdefault("sha3_256_after", "")
+        wr_kwargs["pass_detail"] = pd_list
+        wr = WR(**wr_kwargs)
+    else:
+        wr = wipe_result
+
+    def _coerce_hash(d):
+        """Convert a dict to HashResult, filling in missing optional fields."""
+        if not isinstance(d, dict):
+            return d
+        defaults = {"size_bytes": 0, "computed_at": "", "elapsed_seconds": 0.0, "path": None, "error": None}
+        return HR(**{**defaults, **{k: v for k, v in d.items() if k in {f.name for f in __import__('dataclasses').fields(HR)}}})
+
+    hb = _coerce_hash(hash_before) if hash_before else HR(
+        sha256="0"*64, sha3_256="0"*64, size_bytes=0,
+        computed_at="", elapsed_seconds=0.0)
+    ha = _coerce_hash(hash_after) if hash_after else HR(
+        sha256="0"*64, sha3_256="0"*64, size_bytes=0,
+        computed_at="", elapsed_seconds=0.0)
+
+    if compliance_mappings is None:
+        compliance_mappings = []
+    cm_list = [_to_obj(CM, c) for c in compliance_mappings]
+
+    # Operator username override
+    op_user = operator_username
+    if operator and isinstance(operator, dict):
+        op_user = op_user or operator.get("username")
+
+    return builder.build(
+        file_entry=fe,
+        wipe_result=wr,
+        hash_before=hb,
+        hash_after=ha,
+        compliance_mappings=cm_list,
+        operator_username=op_user,
+        previous_cert_json=previous_cert_json,
+        chain_position=chain_position,
+    )
+
+
+def canonical_serialize(cert: dict) -> bytes:
+    """Module-level wrapper: produce canonical UTF-8 JSON bytes for signing."""
+    import json
+    c = dict(cert)
+    c.setdefault("signature", {})
+    c["signature"] = dict(c["signature"])
+    c["signature"]["value"] = ""
+    return json.dumps(c, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")

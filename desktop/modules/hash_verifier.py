@@ -255,3 +255,25 @@ class HashVerifier:
                 if any(b != pattern_byte for b in chunk):
                     return False
         return True
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience functions — thin wrappers around HashVerifier
+# for cleaner imports in tests and other modules.
+# ---------------------------------------------------------------------------
+_default_verifier = HashVerifier()
+
+
+def hash_file(path: Union[str, Path]) -> HashResult:
+    """Module-level wrapper: compute SHA-256 + SHA3-256 of a file."""
+    return _default_verifier.hash_file(path)
+
+
+def hash_bytes(data: bytes) -> HashResult:
+    """Module-level wrapper: compute SHA-256 + SHA3-256 of raw bytes."""
+    return _default_verifier.hash_bytes(data)
+
+
+def hash_directory(path: Union[str, Path]) -> HashResult:
+    """Module-level wrapper: compute combined hash of a directory tree."""
+    return _default_verifier.hash_directory(path)

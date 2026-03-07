@@ -1,0 +1,59 @@
+version: "3.9"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SecureErase Pro — Development Override
+# Usage: docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up
+#
+# Changes from production:
+#   - Backend: hot reload via uvicorn --reload + source volume mount
+#   - Frontend: Vite dev server (not Nginx build) on port 3000
+#   - PostgreSQL: exposed on host port 5432 for local DB tools
+#   - Redis: exposed on host port 6379 for local inspection
+#   - No TLS (HTTP only)
+#   - Debug logging enabled
+#   - No Nginx proxy (services exposed directly)
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  portal-backend:
+    build:
+      context: ../portal/backend
+      dockerfile: Dockerfile.dev
+    command: uvicorn modules.api:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+    volumes:
+      - ../portal/backend:/app        # hot reload: mount source code
+      - audit_logs:/app/logs
+    environment:
+      LOG_LEVEL: debug
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    ports:
+      - "8000:8000"                    # direct access for API testing
+
+  portal-frontend:
+    build:
+      context: ../portal/frontend
+      dockerfile: Dockerfile.dev
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+    volumes:
+      - ../portal/frontend:/app        # hot reload
+      - /app/node_modules              # anonymous volume to avoid overwriting deps
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - portal-backend
+
+  postgres:
+    ports:
+      - "5432:5432"                    # expose for local DB access (DBeaver, psql, etc.)
+
+  redis:
+    ports:
+      - "6379:6379"                    # expose for local inspection (redis-cli, etc.)
+
+  # Nginx not used in dev — services exposed directly
+  nginx-proxy:
+    profiles:
+      - disabled                       # prevents nginx from starting in dev mode

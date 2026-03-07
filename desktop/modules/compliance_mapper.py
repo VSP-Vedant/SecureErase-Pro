@@ -27,6 +27,7 @@ class DataClassification(str, Enum):
     CONFIDENTIAL    = "confidential"
     SECRET          = "secret"
     TOP_SECRET      = "top_secret"
+    PERSONAL_DATA   = "personal_data"   # GDPR-scope personal information
     PII             = "pii"             # Personally identifiable information
     PHI             = "phi"             # Protected health information
     CARDHOLDER_DATA = "cardholder_data" # PCI-DSS scope
@@ -83,14 +84,14 @@ _STANDARD_COMPLIANCE_MAP = {
                   "NOT sufficient for SSDs — Purge required for flash storage.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53",
+            standard="NIST SP 800-53 Rev.5",
             version="Rev.5",
             control_reference="MP-6",
             satisfied=True,
             notes="Media sanitized per NIST 800-88 Clear. Satisfies MP-6 for non-classified media.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001",
+            standard="ISO/IEC 27001:2022",
             version="2022",
             control_reference="Annex A.8.10 - Information deletion",
             satisfied=True,
@@ -120,6 +121,53 @@ _STANDARD_COMPLIANCE_MAP = {
         ),
     },
 
+    WipeStandard.NIST_800_88_PURGE: {
+        "NIST_800_88_PURGE": ComplianceMapping(
+            standard="NIST SP 800-88",
+            version="Rev.1 (2014)",
+            control_reference="Section 2.4 - Purge",
+            satisfied=True,
+            notes="Purge applied via hardware command (ATA Secure Erase / NVMe Format --ses=2). "
+                  "Suitable for SSDs, NVMe, and flash media. Satisfies Purge requirement.",
+        ),
+        "NIST_800_53_MP6": ComplianceMapping(
+            standard="NIST SP 800-53 Rev.5",
+            version="Rev.5",
+            control_reference="MP-6",
+            satisfied=True,
+            notes="Media purged per NIST 800-88 Purge. Satisfies MP-6 for classified media on SSDs.",
+        ),
+        "ISO_27001_A810": ComplianceMapping(
+            standard="ISO/IEC 27001:2022",
+            version="2022",
+            control_reference="Annex A.8.10 - Information deletion",
+            satisfied=True,
+            notes="Deletion documented with signed certificate per A.8.10 requirements.",
+        ),
+        "GDPR_ART5_ART17": ComplianceMapping(
+            standard="GDPR",
+            version="2016/679",
+            control_reference="Article 5(1)(e) storage limitation; Article 17 right to erasure",
+            satisfied=True,
+            notes="Data rendered inaccessible via hardware Purge. Certificate provides "
+                  "demonstrable evidence for compliance with GDPR erasure obligations.",
+        ),
+        "HIPAA_164_310": ComplianceMapping(
+            standard="HIPAA",
+            version="45 CFR",
+            control_reference="§164.310(d)(2)(i) - Disposal",
+            satisfied=True,
+            notes="Electronic media purged via hardware command. Certificate documents disposal.",
+        ),
+        "ISO_27040": ComplianceMapping(
+            standard="ISO/IEC 27040",
+            version="2015",
+            control_reference="Section 5.4 - Media sanitization",
+            satisfied=True,
+            notes="Purge via hardware command satisfies ISO/IEC 27040 for flash media.",
+        ),
+    },
+
     WipeStandard.DOD_5220_22M_3PASS: {
         "DOD_5220_22M": ComplianceMapping(
             standard="DoD 5220.22-M",
@@ -136,14 +184,14 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="DoD 3-pass exceeds NIST 800-88 Clear requirements.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53",
+            standard="NIST SP 800-53 Rev.5",
             version="Rev.5",
             control_reference="MP-6",
             satisfied=True,
             notes="Media sanitized to DoD standard; satisfies MP-6.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001",
+            standard="ISO/IEC 27001:2022",
             version="2022",
             control_reference="Annex A.8.10",
             satisfied=True,
@@ -203,12 +251,12 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="Gutmann 35-pass far exceeds NIST 800-88 Clear requirements.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53", version="Rev.5",
+            standard="NIST SP 800-53 Rev.5", version="Rev.5",
             control_reference="MP-6", satisfied=True,
             notes="Gutmann 35-pass satisfies MP-6.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001", version="2022",
+            standard="ISO/IEC 27001:2022", version="2022",
             control_reference="Annex A.8.10", satisfied=True,
             notes="Deletion documented per A.8.10.",
         ),
@@ -253,11 +301,11 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="Schneier 7-pass exceeds NIST 800-88 Clear.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53", version="Rev.5",
+            standard="NIST SP 800-53 Rev.5", version="Rev.5",
             control_reference="MP-6", satisfied=True, notes="Satisfies MP-6.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001", version="2022",
+            standard="ISO/IEC 27001:2022", version="2022",
             control_reference="Annex A.8.10", satisfied=True,
             notes="Documented per A.8.10.",
         ),
@@ -302,11 +350,11 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="AFSSI-5020 satisfies NIST 800-88 Clear.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53", version="Rev.5",
+            standard="NIST SP 800-53 Rev.5", version="Rev.5",
             control_reference="MP-6", satisfied=True, notes="Satisfies MP-6.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001", version="2022",
+            standard="ISO/IEC 27001:2022", version="2022",
             control_reference="Annex A.8.10", satisfied=True, notes="Documented per A.8.10.",
         ),
         "GDPR_ART5_ART17": ComplianceMapping(
@@ -334,7 +382,7 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="AR 380-19 satisfies NIST 800-88 Clear.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53", version="Rev.5",
+            standard="NIST SP 800-53 Rev.5", version="Rev.5",
             control_reference="MP-6", satisfied=True, notes="Satisfies MP-6.",
         ),
     },
@@ -348,7 +396,7 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="US Navy 3-pass: 0x01, 0x27FFFFFF, random.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53", version="Rev.5",
+            standard="NIST SP 800-53 Rev.5", version="Rev.5",
             control_reference="MP-6", satisfied=True, notes="Satisfies MP-6.",
         ),
     },
@@ -363,7 +411,7 @@ _STANDARD_COMPLIANCE_MAP = {
                   "For OFFICIAL classification tier.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001", version="2022",
+            standard="ISO/IEC 27001:2022", version="2022",
             control_reference="Annex A.8.10", satisfied=True, notes="Documented per A.8.10.",
         ),
         "GDPR_ART5_ART17": ComplianceMapping(
@@ -388,7 +436,7 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="HMG IS5 Enhanced satisfies NIST 800-88 Clear.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001", version="2022",
+            standard="ISO/IEC 27001:2022", version="2022",
             control_reference="Annex A.8.10", satisfied=True, notes="Documented per A.8.10.",
         ),
         "GDPR_ART5_ART17": ComplianceMapping(
@@ -412,11 +460,11 @@ _STANDARD_COMPLIANCE_MAP = {
             notes="DoD 7-pass far exceeds NIST 800-88 Clear.",
         ),
         "NIST_800_53_MP6": ComplianceMapping(
-            standard="NIST SP 800-53", version="Rev.5",
+            standard="NIST SP 800-53 Rev.5", version="Rev.5",
             control_reference="MP-6", satisfied=True, notes="Satisfies MP-6.",
         ),
         "ISO_27001_A810": ComplianceMapping(
-            standard="ISO/IEC 27001", version="2022",
+            standard="ISO/IEC 27001:2022", version="2022",
             control_reference="Annex A.8.10", satisfied=True, notes="Documented per A.8.10.",
         ),
         "GDPR_ART5_ART17": ComplianceMapping(
@@ -545,4 +593,80 @@ class ComplianceMapper:
                           "unrecoverable. Multi-pass overwrite standards satisfy this requirement.",
                 )
 
+        # GDPR enforcement for personal/PII data — ensure GDPR is always present
+        if classification in (
+            DataClassification.PERSONAL_DATA,
+            DataClassification.PII,
+            DataClassification.PHI,
+        ):
+            if "GDPR_ART5_ART17" not in base_mappings:
+                base_mappings["GDPR_ART5_ART17"] = ComplianceMapping(
+                    standard="GDPR",
+                    version="2016/679",
+                    control_reference="Article 5(1)(e); Article 17",
+                    satisfied=True,
+                    notes="Personal data rendered inaccessible. Certificate provides "
+                          "demonstrable evidence of erasure for GDPR compliance.",
+                )
+
         return list(base_mappings.values())
+
+
+# ---------------------------------------------------------------------------
+# Module-level constants and convenience functions
+# ---------------------------------------------------------------------------
+
+# STANDARDS: list of all WipeStandard enum values — useful for UI dropdowns
+# and test parametrize decorators.
+STANDARDS = list(WipeStandard)
+
+_default_mapper = ComplianceMapper()
+
+
+def map_to_frameworks(
+    standard,
+    media_type: str = "HDD",
+    classification=None,
+) -> list:
+    """
+    Module-level wrapper: map a wipe standard to compliance frameworks.
+    Accepts WipeStandard enum OR a string value.
+    Returns a list of dicts (not dataclass instances) for easy test/JSON use.
+    Unknown standards return an empty list.
+    """
+    # Coerce string → WipeStandard enum; return [] for unknown values
+    if not isinstance(standard, WipeStandard):
+        try:
+            standard = WipeStandard(standard)
+        except ValueError:
+            return []
+
+    # Normalize media_type casing
+    media_norm = media_type.upper() if media_type else "HDD"
+    if media_norm not in ("HDD", "SSD", "NVME", "UNKNOWN"):
+        media_norm = "HDD"
+
+    # Normalize classification
+    cls_norm = None
+    if classification:
+        try:
+            cls_norm = DataClassification(classification)
+        except ValueError:
+            # Map plain strings like "personal_data" → enum
+            _map = {
+                "personal_data": DataClassification.PERSONAL_DATA,
+                "pii": DataClassification.PII,
+                "general": None,
+                "confidential": DataClassification.CONFIDENTIAL,
+                "cardholder_data": DataClassification.CARDHOLDER_DATA,
+                "phi": DataClassification.PHI,
+            }
+            cls_norm = _map.get(str(classification).lower())
+
+    results = _default_mapper.map(
+        standard=standard,
+        media_type=media_norm,
+        classification=cls_norm,
+    )
+    # Return list of dicts for easy subscript access in tests and JSON serialization
+    return [r.to_dict() for r in results]

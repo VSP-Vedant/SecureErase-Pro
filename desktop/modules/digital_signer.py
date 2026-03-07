@@ -110,51 +110,53 @@ class DigitalSigner:
                 "private_key_path, private_key_pem, or pkcs11_slot"
             )
 
-        # Canonicalize the cert — signature.value must be ""
-        # CertificateBuilder.canonical_serialize enforces this invariant
-        builder = CertificateBuilder.__new__(CertificateBuilder)
-        canonical_bytes = builder.canonical_serialize(cert)
-
-        # Sign the canonical bytes
-        signed_at = datetime.now(timezone.utc).isoformat()
-
+        # Determine algorithm string before canonicalizing
         if isinstance(private_key, RSAPrivateKey):
-            sig_bytes = private_key.sign(
-                canonical_bytes,
-                # PSS padding with SHA-256 and max salt length
-                padding.PSS(
-                    mgf=padding.MGF1(hashes.SHA256()),
-                    salt_length=padding.PSS.MAX_LENGTH,
-                ),
-                hashes.SHA256(),
-            )
             algorithm = SignatureAlgorithm.RSA_4096_PSS
-
         elif isinstance(private_key, EllipticCurvePrivateKey):
-            sig_bytes = private_key.sign(
-                canonical_bytes,
-                # ECDSA with SHA-256 — the curve (P-384) is fixed by the key
-                ECDSA(hashes.SHA256()),
-            )
             algorithm = SignatureAlgorithm.ECDSA_P384
-
         else:
             raise TypeError(
                 f"DigitalSigner: unsupported key type: {type(private_key).__name__}. "
                 "Only RSA-4096 and ECDSA P-384 are supported."
             )
 
+        # Build the cert copy with algorithm + signed_at committed, value = ""
+        # This ensures verify() sees the same canonical bytes (it only clears value).
+        import copy
+        signed_at = datetime.now(timezone.utc).isoformat()
+        cert_to_sign = copy.deepcopy(cert)
+        cert_to_sign["signature"]["algorithm"] = algorithm
+        cert_to_sign["signature"]["signed_at"] = signed_at
+        cert_to_sign["signature"]["value"] = ""
+
+        # Canonicalize AFTER setting all metadata except value
+        builder = CertificateBuilder.__new__(CertificateBuilder)
+        canonical_bytes = builder.canonical_serialize(cert_to_sign)
+
+        # Sign the canonical bytes
+        if isinstance(private_key, RSAPrivateKey):
+            sig_bytes = private_key.sign(
+                canonical_bytes,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+        elif isinstance(private_key, EllipticCurvePrivateKey):
+            sig_bytes = private_key.sign(
+                canonical_bytes,
+                ECDSA(hashes.SHA256()),
+            )
+
         # Base64url-encode the signature (no padding per JWS conventions)
         sig_b64 = base64.urlsafe_b64encode(sig_bytes).rstrip(b"=").decode("ascii")
 
-        # Update the certificate's signature block
-        import copy
-        signed_cert = copy.deepcopy(cert)
-        signed_cert["signature"]["algorithm"] = algorithm
-        signed_cert["signature"]["signed_at"] = signed_at
-        signed_cert["signature"]["value"] = sig_b64
+        # Set the value on the already-prepared cert copy
+        cert_to_sign["signature"]["value"] = sig_b64
 
-        return signed_cert
+        return cert_to_sign
 
     def verify(
         self,
