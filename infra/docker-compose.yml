@@ -1,0 +1,187 @@
+version: "3.9"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SecureErase Pro — Production Docker Compose
+# Deploy: docker compose -f infra/docker-compose.yml up -d
+# Requires: infra/certs/{fullchain.pem,privkey.pem}, .env populated
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Portal Backend (FastAPI) ────────────────────────────────────────────────
+  portal-backend:
+    build:
+      context: ../portal/backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL:          ${DATABASE_URL}
+      SECRET_KEY:            ${SECRET_KEY}
+      JWT_SECRET:            ${JWT_SECRET}
+      JWT_EXPIRY_MINUTES:    ${JWT_EXPIRY_MINUTES:-480}
+      SIGNING_KEY_PATH:      ${SIGNING_KEY_PATH}
+      PUBLIC_KEY_PATH:       ${PUBLIC_KEY_PATH}
+      CORS_ORIGINS:          ${CORS_ORIGINS}
+      REDIS_URL:             ${REDIS_URL}
+      PORTAL_DOMAIN:         ${PORTAL_DOMAIN}
+      LOG_LEVEL:             ${LOG_LEVEL:-info}
+      SENTRY_DSN:            ${SENTRY_DSN:-}
+      ADMIN_EMAIL:           ${ADMIN_EMAIL}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD}
+      SMTP_HOST:             ${SMTP_HOST:-}
+      SMTP_PORT:             ${SMTP_PORT:-587}
+      SMTP_USER:             ${SMTP_USER:-}
+      SMTP_PASSWORD:         ${SMTP_PASSWORD:-}
+      NOTIFICATION_FROM_EMAIL: ${NOTIFICATION_FROM_EMAIL:-}
+    volumes:
+      # Signing keys: read-only mount — private key never leaves host path
+      - type: bind
+        source: ../infra/signing_keys
+        target: /run/secrets
+        read_only: true
+      # Persistent audit logs
+      - audit_logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - internal
+      - proxy
+    expose:
+      - "8000"
+
+  # ── Portal Frontend (React + Nginx) ─────────────────────────────────────────
+  portal-frontend:
+    build:
+      context: ../portal/frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
+    depends_on:
+      portal-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - proxy
+    expose:
+      - "80"
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB}
+      POSTGRES_USER:     ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - internal
+    # NOT exposed externally — accessible only within 'internal' network
+
+  # ── Redis (rate limiting + session cache) ────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1
+      --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - internal
+    # NOT exposed externally
+
+  # ── Nginx Reverse Proxy (TLS termination) ────────────────────────────────────
+  nginx-proxy:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - type: bind
+        source: ./nginx/nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+      - type: bind
+        source: ./certs
+        target: /etc/nginx/certs
+        read_only: true
+      # Certbot webroot challenge directory (shared with certbot service)
+      - certbot_webroot:/var/www/certbot:ro
+    depends_on:
+      - portal-frontend
+      - portal-backend
+    restart: unless-stopped
+    networks:
+      - proxy
+
+  # ── Certbot (Let's Encrypt — disabled by default) ────────────────────────────
+  # To enable:
+  #   1. Uncomment the certbot service below
+  #   2. Set PORTAL_DOMAIN in .env to your actual domain
+  #   3. Run: docker compose run --rm certbot certonly --webroot \
+  #              -w /var/www/certbot -d ${PORTAL_DOMAIN} \
+  #              --email ${ADMIN_EMAIL} --agree-tos --no-eff-email
+  #   4. Update nginx.conf ssl_certificate paths to Let's Encrypt paths
+  #   5. Add a cron job: docker compose run --rm certbot renew
+  #
+  # certbot:
+  #   image: certbot/certbot
+  #   volumes:
+  #     - certbot_webroot:/var/www/certbot
+  #     - ./certs/letsencrypt:/etc/letsencrypt
+  #   entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+  #   networks:
+  #     - proxy
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Named Volumes
+# ──────────────────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  audit_logs:
+    driver: local
+  certbot_webroot:
+    driver: local
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Networks
+# internal : database + redis — not reachable from outside compose network
+# proxy    : nginx ↔ frontend ↔ backend — exposed via nginx only
+# ──────────────────────────────────────────────────────────────────────────────
+networks:
+  internal:
+    driver: bridge
+    internal: true   # no external connectivity from this network
+  proxy:
+    driver: bridge

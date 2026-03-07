@@ -4,44 +4,45 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
+*.egg
 *.egg-info/
 dist/
 build/
+*.so
 .venv/
 venv/
 env/
-pip-wheel-metadata/
-.pytest_cache/
-.mypy_cache/
-htmlcov/
-.coverage
-*.log
+.env
 
-# Node / Frontend
-node_modules/
-.next/
-dist/
-.env.local
-.cache/
-
-# Secrets
+# Keys & secrets — NEVER commit
 *.pem
 *.key
 *.p12
 *.pfx
-.env
-!.env.example
-
-# Certs (runtime, not repo)
 infra/certs/*.crt
 infra/certs/*.key
-infra/certs/*.pem
 
 # OS
 .DS_Store
 Thumbs.db
+*.swp
 
 # IDE
 .vscode/
 .idea/
-*.swp
+
+# Logs
+*.log
+audit_logs/
+
+# Node
+node_modules/
+dist/
+.pnpm-store/
+
+# Docker
+.docker/
+
+# DB
+*.sqlite3
+*.db

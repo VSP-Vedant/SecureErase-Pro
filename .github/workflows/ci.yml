@@ -1,0 +1,147 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [dev, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-desktop:
+    name: Desktop Tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r desktop/requirements.txt pytest pytest-cov
+      - name: Run tests
+        run: pytest desktop/tests/ -v --cov=desktop/modules --cov-report=xml
+      - uses: codecov/codecov-action@v4
+
+  test-portal:
+    name: Portal Backend Tests (pytest)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 10s
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 10s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r portal/backend/requirements.txt pytest pytest-asyncio httpx
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/test_db
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: test-secret-key-for-ci-only
+          JWT_SECRET: test-jwt-secret-for-ci-only
+        run: pytest portal/backend/tests/ -v --asyncio-mode=auto
+
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    needs: [test-desktop, test-portal]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: portal/backend
+          push: false
+          tags: secureerase-portal-backend:pr-${{ github.event.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: portal/frontend
+          push: false
+          tags: secureerase-portal-frontend:pr-${{ github.event.number }}
+
+  security-scan:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    needs: [build-images]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy on backend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secureerase-portal-backend:pr-${{ github.event.number }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+      - name: Run Trivy on frontend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secureerase-portal-frontend:pr-${{ github.event.number }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    needs: [test-desktop, test-portal]
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to staging
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+        run: |
+          echo "$STAGING_SSH_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            deploy@${STAGING_HOST} \
+            "cd /opt/secureerase && git pull origin dev && \
+             docker compose -f infra/docker-compose.yml up -d --build && \
+             docker compose -f infra/docker-compose.yml exec portal-backend \
+             python -m alembic upgrade head"
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [test-desktop, test-portal, security-scan]
+    environment:
+      name: production
+      url: https://verify.yourdomain.com
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to production
+        env:
+          PROD_HOST: ${{ secrets.PROD_HOST }}
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          echo "$PROD_SSH_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+          ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
+            deploy@${PROD_HOST} \
+            "cd /opt/secureerase && git pull origin main && \
+             docker compose -f infra/docker-compose.yml up -d --build && \
+             docker compose -f infra/docker-compose.yml exec portal-backend \
+             python -m alembic upgrade head"

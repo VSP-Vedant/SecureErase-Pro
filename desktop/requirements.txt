@@ -1,0 +1,21 @@
+# SecureErase Pro — Desktop Application Requirements
+# Install: pip install -r requirements.txt
+
+# Core dependencies
+cryptography>=41.0.0          # RSA-4096, ECDSA-P384, PKCS#8 key management
+PyQt6>=6.6.0                  # Desktop UI framework
+httpx>=0.25.0                 # Async HTTP client for RegistryClient
+
+# PDF generation and signing
+reportlab>=4.0.0              # PDF layout and rendering
+pypdf>=3.16.0                 # PDF reading/writing, attachment embedding
+qrcode[pil]>=7.4.0            # QR code generation
+Pillow>=10.0.0                # PIL image support for qrcode
+endesive>=2.11.0              # PAdES digital signature for PDFs
+
+# Optional: HSM/PKCS#11 support
+# python-pkcs11>=0.7.0        # Uncomment to enable PKCS#11 HSM signing
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
