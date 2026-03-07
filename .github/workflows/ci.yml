@@ -1,5 +1,8 @@
 name: CI/CD Pipeline
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Triggers
+# ─────────────────────────────────────────────────────────────────────────────
 on:
   push:
     branches: [main, dev, "feature/**"]
@@ -7,9 +10,9 @@ on:
     branches: [main, dev]
 
 jobs:
-  # ─────────────────────────────────────────────────────────
-  # Job 1: Desktop module tests
-  # ─────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 1 — Desktop module tests
+  # ───────────────────────────────────────────────────────────────────────────
   test-desktop:
     name: Desktop Tests (pytest)
     runs-on: ubuntu-latest
@@ -19,6 +22,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: desktop/requirements.txt
 
       - name: Install dependencies
         run: |
@@ -26,7 +31,7 @@ jobs:
           pip install -r desktop/requirements.txt pytest pytest-cov
 
       - name: Run tests
-        run: pytest desktop/tests/ -v --cov=desktop/modules --cov-report=xml
+        run: pytest desktop/tests/ -v --tb=short --cov=desktop/modules --cov-report=xml
 
       - uses: codecov/codecov-action@v4
         if: always()
@@ -34,9 +39,9 @@ jobs:
           files: coverage.xml
           flags: desktop
 
-  # ─────────────────────────────────────────────────────────
-  # Job 2: Portal backend tests (unit tests — no DB/Redis needed)
-  # ─────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 2 — Portal backend tests (unit only — no DB/Redis required)
+  # ───────────────────────────────────────────────────────────────────────────
   test-portal:
     name: Portal Backend Tests (pytest)
     runs-on: ubuntu-latest
@@ -46,8 +51,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: portal/backend/requirements.txt
 
-      - name: Install dependencies
+      - name: Install system deps (libzbar0 for pyzbar)
+        run: sudo apt-get install -y --no-install-recommends libzbar0
+
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install -r portal/backend/requirements.txt pytest pytest-cov httpx
@@ -56,11 +66,11 @@ jobs:
         env:
           DATABASE_URL: "postgresql://test_user:test_pass@localhost:5432/test_db"
           REDIS_URL: "redis://localhost:6379/0"
-          SECRET_KEY: "test-secret-key-for-ci-only-minimum-32-chars"
-          JWT_SECRET: "test-jwt-secret-for-ci-only-minimum-32-chars"
+          SECRET_KEY: "test-secret-key-for-ci-only-minimum-32-characters"
+          JWT_SECRET: "test-jwt-secret-for-ci-only-minimum-32-characters"
           COLUMN_ENCRYPTION_KEY: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-          IP_HASH_SALT: "test-ip-hash-salt"
-        run: pytest portal/backend/tests/ -v --cov=portal/backend/modules --cov-report=xml
+          IP_HASH_SALT: "test-ip-hash-salt-for-ci-only"
+        run: pytest portal/backend/tests/ -v --tb=short --cov=portal/backend/modules --cov-report=xml
 
       - uses: codecov/codecov-action@v4
         if: always()
@@ -68,9 +78,9 @@ jobs:
           files: coverage.xml
           flags: portal
 
-  # ─────────────────────────────────────────────────────────
-  # Job 3: Frontend lint + production build check
-  # ─────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 3 — Frontend lint + production build check
+  # ───────────────────────────────────────────────────────────────────────────
   test-frontend:
     name: Frontend Build Check
     runs-on: ubuntu-latest
@@ -89,27 +99,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build (production)
+      - name: Production build
         run: npm run build
 
       - name: Upload dist artifact
         uses: actions/upload-artifact@v4
         with:
-          name: frontend-dist
+          name: frontend-dist-${{ github.sha }}
           path: portal/frontend/dist/
-          retention-days: 3
+          retention-days: 7
 
-  # ─────────────────────────────────────────────────────────
-  # Job 4: Build Docker images
-  # Runs on PRs to main AND pushes to main/dev
-  # ─────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 4 — Build Docker images
+  # Runs on: any PR, or push to main/dev
+  # ───────────────────────────────────────────────────────────────────────────
   build-images:
     name: Build Docker Images
     runs-on: ubuntu-latest
     needs: [test-desktop, test-portal, test-frontend]
     if: >
-      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
-      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'))
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'))
     steps:
       - uses: actions/checkout@v4
 
@@ -134,9 +145,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ─────────────────────────────────────────────────────────
-  # Job 5: Trivy security scan — PRs to main only
-  # ─────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 5 — Trivy security scan (PRs to main only)
+  # Images don't persist between jobs; rebuild using GHA layer cache.
+  # ───────────────────────────────────────────────────────────────────────────
   security-scan:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
@@ -148,7 +160,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Rebuild locally — Docker images don't persist across jobs
       - name: Rebuild backend for scanning
         uses: docker/build-push-action@v5
         with:
@@ -170,7 +181,7 @@ jobs:
         with:
           image-ref: secureerase-portal-backend:scan
           format: table
-          exit-code: 1
+          exit-code: "1"
           severity: CRITICAL
 
       - name: Trivy scan — frontend
@@ -178,12 +189,14 @@ jobs:
         with:
           image-ref: secureerase-portal-frontend:scan
           format: table
-          exit-code: 1
+          exit-code: "1"
           severity: CRITICAL
 
-  # ─────────────────────────────────────────────────────────
-  # Job 6: Deploy to staging (push to dev)
-  # ─────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 6 — Deploy to staging (push to dev only)
+  # Skips gracefully when STAGING_HOST / STAGING_SSH_KEY are not set.
+  # Set these in: GitHub repo → Settings → Secrets and variables → Actions
+  # ───────────────────────────────────────────────────────────────────────────
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
@@ -198,7 +211,12 @@ jobs:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
         run: |
-          echo "$STAGING_SSH_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+          if [ -z "${STAGING_HOST}" ] || [ -z "${STAGING_SSH_KEY}" ]; then
+            echo "WARNING: STAGING_HOST or STAGING_SSH_KEY not configured. Skipping deploy."
+            echo "To enable: GitHub repo > Settings > Secrets > Actions"
+            exit 0
+          fi
+          echo "${STAGING_SSH_KEY}" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
           ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
             deploy@${STAGING_HOST} \
             "cd /opt/secureerase && git pull origin dev && \
@@ -207,12 +225,12 @@ jobs:
              python -m alembic -c migrations/alembic.ini upgrade head"
           rm -f /tmp/deploy_key
 
-  # ─────────────────────────────────────────────────────────
-  # Job 7: Deploy to production (push to main)
-  # NOTE: security-scan only runs on PRs. Branch protection rules on
-  # 'main' must require the security-scan check to pass before merge.
-  # This job therefore only needs build-images as a gate.
-  # ─────────────────────────────────────────────────────────
+  # ───────────────────────────────────────────────────────────────────────────
+  # Job 7 — Deploy to production (push to main only)
+  # Skips gracefully when PROD_HOST / PROD_SSH_KEY are not set.
+  # Security model: security-scan blocks PRs to main via branch protection.
+  # Set these in: GitHub repo → Settings → Secrets and variables → Actions
+  # ───────────────────────────────────────────────────────────────────────────
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
@@ -229,7 +247,12 @@ jobs:
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
         run: |
-          echo "$PROD_SSH_KEY" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
+          if [ -z "${PROD_HOST}" ] || [ -z "${PROD_SSH_KEY}" ]; then
+            echo "WARNING: PROD_HOST or PROD_SSH_KEY not configured. Skipping deploy."
+            echo "To enable: GitHub repo > Settings > Secrets > Actions"
+            exit 0
+          fi
+          echo "${PROD_SSH_KEY}" > /tmp/deploy_key && chmod 600 /tmp/deploy_key
           ssh -i /tmp/deploy_key -o StrictHostKeyChecking=no \
             deploy@${PROD_HOST} \
             "cd /opt/secureerase && git pull origin main && \
