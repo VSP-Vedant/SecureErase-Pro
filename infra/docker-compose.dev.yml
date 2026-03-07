@@ -2,58 +2,114 @@ version: "3.9"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SecureErase Pro — Development Override
-# Usage: docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev.yml up
 #
-# Changes from production:
-#   - Backend: hot reload via uvicorn --reload + source volume mount
-#   - Frontend: Vite dev server (not Nginx build) on port 3000
-#   - PostgreSQL: exposed on host port 5432 for local DB tools
+# Usage (from repo root):
+#   docker compose -f infra/docker-compose.yml \
+#                  -f infra/docker-compose.dev.yml up
+#
+# What changes from production:
+#   - Backend: uvicorn --reload + source volume mount for hot reload
+#   - Frontend: Vite dev server on port 3000 (not Nginx production build)
+#   - PostgreSQL: exposed on host port 5432 for local DB tools (DBeaver, psql)
 #   - Redis: exposed on host port 6379 for local inspection
-#   - No TLS (HTTP only)
-#   - Debug logging enabled
-#   - No Nginx proxy (services exposed directly)
+#   - No TLS (HTTP only — no nginx-proxy, services accessed directly)
+#   - Debug logging enabled (LOG_LEVEL=debug)
+#   - No certbot service
 # ──────────────────────────────────────────────────────────────────────────────
 
 services:
 
+  # ── Portal Backend: hot reload via uvicorn --reload ──────────────────────────
   portal-backend:
     build:
       context: ../portal/backend
-      dockerfile: Dockerfile.dev
-    command: uvicorn modules.api:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+      dockerfile: Dockerfile
+    command: >
+      uvicorn modules.api:app
+        --host 0.0.0.0
+        --port 8000
+        --reload
+        --log-level debug
     volumes:
-      - ../portal/backend:/app        # hot reload: mount source code
+      - ../portal/backend:/app        # source mount — changes trigger reload
       - audit_logs:/app/logs
     environment:
       LOG_LEVEL: debug
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-secureerase}:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/${POSTGRES_DB:-secureerase_dev}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-devredis}@redis:6379/0
+      CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+      JWT_EXPIRY_MINUTES: 480
+      # Dev signing keys — override with real keys for testing signed certs
+      SIGNING_KEY_PATH: /run/secrets/dev_private.pem
+      PUBLIC_KEY_PATH: /run/secrets/dev_public.pem
     ports:
-      - "8000:8000"                    # direct access for API testing
+      - "8000:8000"                    # direct backend access for API testing
+    # Remove health check dependency in dev to allow faster startup
+    depends_on:
+      - postgres
+      - redis
+    # Override production healthcheck with a faster one for dev convenience
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - internal
+      - proxy
 
+  # ── Portal Frontend: Vite dev server (hot module replacement) ─────────────────
   portal-frontend:
     build:
       context: ../portal/frontend
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile.dev          # lighter dev image with Node + Vite only
+      args:
+        VITE_API_BASE_URL: http://localhost:8000/api/v1
     command: npm run dev -- --host 0.0.0.0 --port 3000
     volumes:
-      - ../portal/frontend:/app        # hot reload
-      - /app/node_modules              # anonymous volume to avoid overwriting deps
+      - ../portal/frontend:/app           # source mount for HMR
+      - /app/node_modules                 # anonymous volume — don't overwrite deps
     environment:
       VITE_API_BASE_URL: http://localhost:8000/api/v1
     ports:
-      - "3000:3000"
+      - "3000:3000"                       # Vite dev server
     depends_on:
       - portal-backend
+    networks:
+      - proxy
 
+  # ── PostgreSQL: expose port for local DB tools ───────────────────────────────
   postgres:
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-secureerase_dev}
+      POSTGRES_USER:     ${POSTGRES_USER:-secureerase}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
     ports:
-      - "5432:5432"                    # expose for local DB access (DBeaver, psql, etc.)
+      - "5432:5432"                       # expose for DBeaver, psql, pgAdmin, etc.
 
+  # ── Redis: expose port for local inspection ──────────────────────────────────
   redis:
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:-devredis}
+      --loglevel debug
     ports:
-      - "6379:6379"                    # expose for local inspection (redis-cli, etc.)
+      - "6379:6379"                       # expose for redis-cli, RedisInsight, etc.
 
-  # Nginx not used in dev — services exposed directly
+  # ── Nginx: disabled in dev (services accessed directly) ─────────────────────
   nginx-proxy:
     profiles:
-      - disabled                       # prevents nginx from starting in dev mode
+      - disabled                          # use 'docker compose --profile disabled' to skip
+
+
+# Named volumes — must reference those declared in docker-compose.yml
+volumes:
+  postgres_data:
+  redis_data:
+  audit_logs:
+  certbot_webroot:
+
+networks:
+  internal:
+  proxy:
