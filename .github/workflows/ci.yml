@@ -2,114 +2,197 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: [dev, "feature/**"]
+    branches: [main, dev, "feature/**"]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
+  # ─────────────────────────────────────────────────────────
+  # Job 1: Desktop module tests
+  # ─────────────────────────────────────────────────────────
   test-desktop:
     name: Desktop Tests (pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r desktop/requirements.txt pytest pytest-cov
+
       - name: Run tests
         run: pytest desktop/tests/ -v --cov=desktop/modules --cov-report=xml
-      - uses: codecov/codecov-action@v4
 
+      - uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: coverage.xml
+          flags: desktop
+
+  # ─────────────────────────────────────────────────────────
+  # Job 2: Portal backend tests (unit tests — no DB/Redis needed)
+  # ─────────────────────────────────────────────────────────
   test-portal:
     name: Portal Backend Tests (pytest)
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: test_db
-          POSTGRES_USER: test_user
-          POSTGRES_PASSWORD: test_pass
-        ports: ["5432:5432"]
-        options: --health-cmd pg_isready --health-interval 10s
-      redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
-        options: --health-cmd "redis-cli ping" --health-interval 10s
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r portal/backend/requirements.txt pytest pytest-asyncio httpx
+          pip install -r portal/backend/requirements.txt pytest pytest-cov httpx
+
       - name: Run tests
         env:
-          DATABASE_URL: postgresql://test_user:test_pass@localhost:5432/test_db
-          REDIS_URL: redis://localhost:6379/0
-          SECRET_KEY: test-secret-key-for-ci-only
-          JWT_SECRET: test-jwt-secret-for-ci-only
-        run: pytest portal/backend/tests/ -v --asyncio-mode=auto
+          DATABASE_URL: "postgresql://test_user:test_pass@localhost:5432/test_db"
+          REDIS_URL: "redis://localhost:6379/0"
+          SECRET_KEY: "test-secret-key-for-ci-only-minimum-32-chars"
+          JWT_SECRET: "test-jwt-secret-for-ci-only-minimum-32-chars"
+          COLUMN_ENCRYPTION_KEY: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          IP_HASH_SALT: "test-ip-hash-salt"
+        run: pytest portal/backend/tests/ -v --cov=portal/backend/modules --cov-report=xml
 
+      - uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: coverage.xml
+          flags: portal
+
+  # ─────────────────────────────────────────────────────────
+  # Job 3: Frontend lint + production build check
+  # ─────────────────────────────────────────────────────────
+  test-frontend:
+    name: Frontend Build Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: portal/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (production)
+        run: npm run build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: portal/frontend/dist/
+          retention-days: 3
+
+  # ─────────────────────────────────────────────────────────
+  # Job 4: Build Docker images
+  # Runs on PRs to main AND pushes to main/dev
+  # ─────────────────────────────────────────────────────────
   build-images:
     name: Build Docker Images
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
-    needs: [test-desktop, test-portal]
+    needs: [test-desktop, test-portal, test-frontend]
+    if: >
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'))
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
       - name: Build backend image
         uses: docker/build-push-action@v5
         with:
           context: portal/backend
           push: false
-          tags: secureerase-portal-backend:pr-${{ github.event.number }}
+          tags: secureerase-portal-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
       - name: Build frontend image
         uses: docker/build-push-action@v5
         with:
           context: portal/frontend
           push: false
-          tags: secureerase-portal-frontend:pr-${{ github.event.number }}
+          tags: secureerase-portal-frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
+  # ─────────────────────────────────────────────────────────
+  # Job 5: Trivy security scan — PRs to main only
+  # ─────────────────────────────────────────────────────────
   security-scan:
     name: Trivy Security Scan
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     needs: [build-images]
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
-      - name: Run Trivy on backend image
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Rebuild locally — Docker images don't persist across jobs
+      - name: Rebuild backend for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: portal/backend
+          load: true
+          tags: secureerase-portal-backend:scan
+          cache-from: type=gha
+
+      - name: Rebuild frontend for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: portal/frontend
+          load: true
+          tags: secureerase-portal-frontend:scan
+          cache-from: type=gha
+
+      - name: Trivy scan — backend
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: secureerase-portal-backend:pr-${{ github.event.number }}
-          format: table
-          exit-code: 1
-          severity: CRITICAL
-      - name: Run Trivy on frontend image
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: secureerase-portal-frontend:pr-${{ github.event.number }}
+          image-ref: secureerase-portal-backend:scan
           format: table
           exit-code: 1
           severity: CRITICAL
 
+      - name: Trivy scan — frontend
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secureerase-portal-frontend:scan
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+
+  # ─────────────────────────────────────────────────────────
+  # Job 6: Deploy to staging (push to dev)
+  # ─────────────────────────────────────────────────────────
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
+    needs: [test-desktop, test-portal, test-frontend]
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
-    needs: [test-desktop, test-portal]
     environment: staging
     steps:
       - uses: actions/checkout@v4
+
       - name: Deploy to staging
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
@@ -121,18 +204,26 @@ jobs:
             "cd /opt/secureerase && git pull origin dev && \
              docker compose -f infra/docker-compose.yml up -d --build && \
              docker compose -f infra/docker-compose.yml exec portal-backend \
-             python -m alembic upgrade head"
+             python -m alembic -c migrations/alembic.ini upgrade head"
+          rm -f /tmp/deploy_key
 
+  # ─────────────────────────────────────────────────────────
+  # Job 7: Deploy to production (push to main)
+  # NOTE: security-scan only runs on PRs. Branch protection rules on
+  # 'main' must require the security-scan check to pass before merge.
+  # This job therefore only needs build-images as a gate.
+  # ─────────────────────────────────────────────────────────
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
+    needs: [test-desktop, test-portal, test-frontend, build-images]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [test-desktop, test-portal, security-scan]
     environment:
       name: production
       url: https://verify.yourdomain.com
     steps:
       - uses: actions/checkout@v4
+
       - name: Deploy to production
         env:
           PROD_HOST: ${{ secrets.PROD_HOST }}
@@ -144,4 +235,5 @@ jobs:
             "cd /opt/secureerase && git pull origin main && \
              docker compose -f infra/docker-compose.yml up -d --build && \
              docker compose -f infra/docker-compose.yml exec portal-backend \
-             python -m alembic upgrade head"
+             python -m alembic -c migrations/alembic.ini upgrade head"
+          rm -f /tmp/deploy_key
